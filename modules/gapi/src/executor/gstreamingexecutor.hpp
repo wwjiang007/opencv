@@ -2,7 +2,7 @@
 // It is subject to the license terms in the LICENSE file found in the top-level directory
 // of this distribution and at http://opencv.org/license.html.
 //
-// Copyright (C) 2019 Intel Corporation
+// Copyright (C) 2019-2020 Intel Corporation
 
 #ifndef OPENCV_GAPI_GSTREAMING_EXECUTOR_HPP
 #define OPENCV_GAPI_GSTREAMING_EXECUTOR_HPP
@@ -32,7 +32,13 @@ namespace gimpl {
 
 namespace stream {
 struct Start {};
-struct Stop {};
+struct Stop {
+    enum class Kind {
+        HARD, // a hard-stop: end-of-pipeline reached or stop() called
+        CNST, // a soft-stop emitted for/by constant sources (see QueueReader)
+    } kind = Kind::HARD;
+    cv::GRunArg cdata; // const data for CNST stop
+};
 
 using Cmd = cv::util::variant
     < cv::util::monostate
@@ -91,7 +97,7 @@ protected:
         cv::GMetaArgs       out_metas;
         ade::NodeHandle     nh;
 
-        std::vector<GRunArg> in_constants;
+        cv::GRunArgs in_constants;
 
         std::shared_ptr<GIslandExecutable> isl_exec;
     };
@@ -103,6 +109,8 @@ protected:
         ade::NodeHandle data_nh;
     };
     std::vector<DataDesc> m_slots;
+
+    cv::GRunArgs m_const_vals;
 
     // Order in these vectors follows the GComputaion's protocol
     std::vector<ade::NodeHandle> m_emitters;
@@ -118,7 +126,8 @@ protected:
     void wait_shutdown();
 
 public:
-    explicit GStreamingExecutor(std::unique_ptr<ade::Graph> &&g_model);
+    explicit GStreamingExecutor(std::unique_ptr<ade::Graph> &&g_model,
+                                const cv::GCompileArgs &comp_args);
     ~GStreamingExecutor();
     void setSource(GRunArgs &&args);
     void start();

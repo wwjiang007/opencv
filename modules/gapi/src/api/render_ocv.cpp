@@ -16,13 +16,54 @@ namespace draw
 // FIXME Support `decim` mosaic parameter
 inline void mosaic(cv::Mat& mat, const cv::Rect &rect, int cellSz)
 {
-    cv::Mat msc_roi = mat(rect);
-    int crop_x = msc_roi.cols - msc_roi.cols % cellSz;
-    int crop_y = msc_roi.rows - msc_roi.rows % cellSz;
+    cv::Rect mat_rect(0, 0, mat.cols, mat.rows);
+    auto intersection = mat_rect & rect;
 
-    for(int i = 0; i < crop_y; i += cellSz ) {
-        for(int j = 0; j < crop_x; j += cellSz) {
-            auto cell_roi = msc_roi(cv::Rect(j, i, cellSz, cellSz));
+    cv::Mat msc_roi = mat(intersection);
+
+    bool has_crop_x = false;
+    bool has_crop_y = false;
+
+    int cols = msc_roi.cols;
+    int rows = msc_roi.rows;
+
+    if (msc_roi.cols % cellSz != 0)
+    {
+        has_crop_x = true;
+        cols -= msc_roi.cols % cellSz;
+    }
+
+    if (msc_roi.rows % cellSz != 0)
+    {
+        has_crop_y = true;
+        rows -= msc_roi.rows % cellSz;
+    }
+
+    cv::Mat cell_roi;
+    for(int i = 0; i < rows; i += cellSz )
+    {
+        for(int j = 0; j < cols; j += cellSz)
+        {
+            cell_roi = msc_roi(cv::Rect(j, i, cellSz, cellSz));
+            cell_roi = cv::mean(cell_roi);
+        }
+        if (has_crop_x)
+        {
+            cell_roi = msc_roi(cv::Rect(cols, i, msc_roi.cols - cols, cellSz));
+            cell_roi = cv::mean(cell_roi);
+        }
+    }
+
+    if (has_crop_y)
+    {
+        for(int j = 0; j < cols; j += cellSz)
+        {
+            cell_roi = msc_roi(cv::Rect(j, rows, cellSz, msc_roi.rows - rows));
+            cell_roi = cv::mean(cell_roi);
+        }
+        if (has_crop_x)
+        {
+            cell_roi = msc_roi(cv::Rect(cols, rows, msc_roi.cols - cols, msc_roi.rows - rows));
             cell_roi = cv::mean(cell_roi);
         }
     }
@@ -126,27 +167,11 @@ void drawPrimitivesOCV(cv::Mat& in,
                 break;
             }
 
-            // FIXME avoid code duplicate for Text and FText
             case Prim::index_of<Text>():
             {
                 auto tp = cv::util::get<Text>(p);
                 tp.color = converter.cvtColor(tp.color);
-
-                int baseline = 0;
-                auto size    = cv::getTextSize(tp.text, tp.ff, tp.fs, tp.thick, &baseline);
-                baseline    += tp.thick;
-                size.height += baseline;
-
-                // Allocate mask outside
-                cv::Mat mask(size, CV_8UC1, cv::Scalar::all(0));
-                // Org it's bottom left position for baseline
-                cv::Point org(0, mask.rows - baseline);
-                cv::putText(mask, tp.text, org, tp.ff, tp.fs, 255, tp.thick);
-
-                // Org is bottom left point, trasform it to top left point for blendImage
-                cv::Point tl(tp.org.x, tp.org.y - mask.size().height + baseline);
-
-                blendTextMask(in, mask, tl, tp.color);
+                cv::putText(in, tp.text, tp.org, tp.ff, tp.fs, tp.color, tp.thick, tp.lt, tp.bottom_left_origin);
                 break;
             }
 
@@ -156,7 +181,7 @@ void drawPrimitivesOCV(cv::Mat& in,
                 const auto& ftp  = cv::util::get<FText>(p);
                 const auto color = converter.cvtColor(ftp.color);
 
-                GAPI_Assert(ftpr && "I must pass cv::gapi::wip::draw::freetype_font"
+                GAPI_Assert(ftpr && "You must pass cv::gapi::wip::draw::freetype_font"
                                     " to the graph compile arguments");
                 int baseline = 0;
                 auto size    = ftpr->getTextSize(ftp.text, ftp.fh, &baseline);
@@ -167,7 +192,7 @@ void drawPrimitivesOCV(cv::Mat& in,
                 cv::Point org(0, mask.rows - baseline);
                 ftpr->putText(mask, ftp.text, org, ftp.fh);
 
-                // Org is bottom left point, trasform it to top left point for blendImage
+                // Org is bottom left point, transform it to top left point for blendImage
                 cv::Point tl(ftp.org.x, ftp.org.y - mask.size().height + baseline);
 
                 blendTextMask(in, mask, tl, color);

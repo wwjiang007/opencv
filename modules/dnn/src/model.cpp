@@ -137,6 +137,64 @@ void ClassificationModel::classify(InputArray frame, int& classId, float& conf)
     std::tie(classId, conf) = classify(frame);
 }
 
+KeypointsModel::KeypointsModel(const String& model, const String& config)
+    : Model(model, config) {};
+
+KeypointsModel::KeypointsModel(const Net& network) : Model(network) {};
+
+std::vector<Point2f> KeypointsModel::estimate(InputArray frame, float thresh)
+{
+
+    int frameHeight = frame.getMat().size[0];
+    int frameWidth = frame.getMat().size[1];
+    std::vector<Mat> outs;
+
+    impl->predict(*this, frame.getMat(), outs);
+    CV_Assert(outs.size() == 1);
+    Mat output = outs[0];
+
+    const int nPoints = output.size[1];
+    std::vector<Point2f> points;
+
+    // If output is a map, extract the keypoints
+    if (output.dims == 4)
+    {
+        int height = output.size[2];
+        int width = output.size[3];
+
+        // find the position of the keypoints (ignore the background)
+        for (int n=0; n < nPoints - 1; n++)
+        {
+            // Probability map of corresponding keypoint
+            Mat probMap(height, width, CV_32F, output.ptr(0, n));
+
+            Point2f p(-1, -1);
+            Point maxLoc;
+            double prob;
+            minMaxLoc(probMap, NULL, &prob, NULL, &maxLoc);
+            if (prob > thresh)
+            {
+                p = maxLoc;
+                p.x *= (float)frameWidth / width;
+                p.y *= (float)frameHeight / height;
+            }
+            points.push_back(p);
+        }
+    }
+    // Otherwise the output is a vector of keypoints and we can just return it
+    else
+    {
+        for (int n=0; n < nPoints; n++)
+        {
+            Point2f p;
+            p.x = *output.ptr<float>(0, n, 0);
+            p.y = *output.ptr<float>(0, n, 1);
+            points.push_back(p);
+        }
+    }
+    return points;
+}
+
 SegmentationModel::SegmentationModel(const String& model, const String& config)
     : Model(model, config) {};
 
@@ -178,10 +236,27 @@ void SegmentationModel::segment(InputArray frame, OutputArray mask)
     }
 }
 
-DetectionModel::DetectionModel(const String& model, const String& config)
-    : Model(model, config) {};
+void disableRegionNMS(Net& net)
+{
+    for (String& name : net.getUnconnectedOutLayersNames())
+    {
+        int layerId = net.getLayerId(name);
+        Ptr<RegionLayer> layer = net.getLayer(layerId).dynamicCast<RegionLayer>();
+        if (!layer.empty())
+        {
+            layer->nmsThreshold = 0;
+        }
+    }
+}
 
-DetectionModel::DetectionModel(const Net& network) : Model(network) {};
+DetectionModel::DetectionModel(const String& model, const String& config)
+    : Model(model, config) {
+      disableRegionNMS(*this);
+}
+
+DetectionModel::DetectionModel(const Net& network) : Model(network) {
+    disableRegionNMS(*this);
+}
 
 void DetectionModel::detect(InputArray frame, CV_OUT std::vector<int>& classIds,
                             CV_OUT std::vector<float>& confidences, CV_OUT std::vector<Rect>& boxes,
@@ -206,9 +281,6 @@ void DetectionModel::detect(InputArray frame, CV_OUT std::vector<int>& classIds,
     int lastLayerId = getLayerId(layerNames.back());
     Ptr<Layer> lastLayer = getLayer(lastLayerId);
 
-    std::vector<int> predClassIds;
-    std::vector<Rect> predBoxes;
-    std::vector<float> predConf;
     if (lastLayer->type == "DetectionOutput")
     {
         // Network produces output blob with a shape 1x1xNx7 where N is a number of
@@ -244,15 +316,18 @@ void DetectionModel::detect(InputArray frame, CV_OUT std::vector<int>& classIds,
                 top    = std::max(0, std::min(top, frameHeight - 1));
                 width  = std::max(1, std::min(width, frameWidth - left));
                 height = std::max(1, std::min(height, frameHeight - top));
-                predBoxes.emplace_back(left, top, width, height);
+                boxes.emplace_back(left, top, width, height);
 
-                predClassIds.push_back(static_cast<int>(data[j + 1]));
-                predConf.push_back(conf);
+                classIds.push_back(static_cast<int>(data[j + 1]));
+                confidences.push_back(conf);
             }
         }
     }
     else if (lastLayer->type == "Region")
     {
+        std::vector<int> predClassIds;
+        std::vector<Rect> predBoxes;
+        std::vector<float> predConf;
         for (int i = 0; i < detections.size(); ++i)
         {
             // Network produces output blob with a shape NxC where N is a number of
@@ -285,35 +360,45 @@ void DetectionModel::detect(InputArray frame, CV_OUT std::vector<int>& classIds,
                 predBoxes.emplace_back(left, top, width, height);
             }
         }
-    }
-    else
-        CV_Error(Error::StsNotImplemented, "Unknown output layer type: \"" + lastLayer->type + "\"");
 
-    if (nmsThreshold)
-    {
-        std::vector<int> indices;
-        NMSBoxes(predBoxes, predConf, confThreshold, nmsThreshold, indices);
-
-        boxes.reserve(indices.size());
-        confidences.reserve(indices.size());
-        classIds.reserve(indices.size());
-
-        for (int idx : indices)
+        if (nmsThreshold)
         {
-            boxes.push_back(predBoxes[idx]);
-            confidences.push_back(predConf[idx]);
-            classIds.push_back(predClassIds[idx]);
+            std::map<int, std::vector<size_t> > class2indices;
+            for (size_t i = 0; i < predClassIds.size(); i++)
+            {
+                if (predConf[i] >= confThreshold)
+                {
+                    class2indices[predClassIds[i]].push_back(i);
+                }
+            }
+            for (const auto& it : class2indices)
+            {
+                std::vector<Rect> localBoxes;
+                std::vector<float> localConfidences;
+                for (size_t idx : it.second)
+                {
+                    localBoxes.push_back(predBoxes[idx]);
+                    localConfidences.push_back(predConf[idx]);
+                }
+                std::vector<int> indices;
+                NMSBoxes(localBoxes, localConfidences, confThreshold, nmsThreshold, indices);
+                classIds.resize(classIds.size() + indices.size(), it.first);
+                for (int idx : indices)
+                {
+                    boxes.push_back(localBoxes[idx]);
+                    confidences.push_back(localConfidences[idx]);
+                }
+            }
+        }
+        else
+        {
+            boxes       = std::move(predBoxes);
+            classIds    = std::move(predClassIds);
+            confidences = std::move(predConf);
         }
     }
     else
-    {
-        boxes       = std::move(predBoxes);
-        classIds    = std::move(predClassIds);
-        confidences = std::move(predConf);
-    }
-
-
-
+        CV_Error(Error::StsNotImplemented, "Unknown output layer type: \"" + lastLayer->type + "\"");
 }
 
 }} // namespace
