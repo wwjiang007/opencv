@@ -23,11 +23,26 @@ namespace cv {
 namespace gimpl {
 
     inline cv::Mat asMat(RMat::View& v) {
+#if !defined(GAPI_STANDALONE)
+        return v.dims().empty() ? cv::Mat(v.rows(), v.cols(), v.type(), v.ptr(), v.step())
+                                : cv::Mat(v.dims(), v.type(), v.ptr(), v.steps().data());
+#else
+        // FIXME: add a check that steps are default
         return v.dims().empty() ? cv::Mat(v.rows(), v.cols(), v.type(), v.ptr(), v.step())
                                 : cv::Mat(v.dims(), v.type(), v.ptr());
+
+#endif
     }
     inline RMat::View asView(const Mat& m, RMat::View::DestroyCallback&& cb = nullptr) {
+#if !defined(GAPI_STANDALONE)
+        RMat::View::stepsT steps(m.dims);
+        for (int i = 0; i < m.dims; i++) {
+            steps[i] = m.step[i];
+        }
+        return RMat::View(cv::descr_of(m), m.data, steps, std::move(cb));
+#else
         return RMat::View(cv::descr_of(m), m.data, m.step, std::move(cb));
+#endif
     }
 
     class RMatAdapter : public RMat::Adapter {
@@ -43,10 +58,60 @@ namespace gimpl {
     struct Data;
     struct RcDesc;
 
+    struct GAPI_EXPORTS RMatMediaFrameAdapter final: public cv::RMat::Adapter
+    {
+        using MapDescF = std::function<cv::GMatDesc(const GFrameDesc&)>;
+        using MapDataF = std::function<cv::Mat(const GFrameDesc&, const cv::MediaFrame::View&)>;
+
+        RMatMediaFrameAdapter(const cv::MediaFrame& frame,
+                              const MapDescF& frameDescToMatDesc,
+                              const MapDataF& frameViewToMat) :
+            m_frame(frame),
+            m_frameDesc(frame.desc()),
+            m_frameDescToMatDesc(frameDescToMatDesc),
+            m_frameViewToMat(frameViewToMat)
+        { }
+
+        virtual cv::RMat::View access(cv::RMat::Access a) override
+        {
+            auto rmatToFrameAccess = [](cv::RMat::Access rmatAccess) {
+                switch(rmatAccess) {
+                    case cv::RMat::Access::R:
+                        return cv::MediaFrame::Access::R;
+                    case cv::RMat::Access::W:
+                        return cv::MediaFrame::Access::W;
+                    default:
+                        cv::util::throw_error(std::logic_error("cv::RMat::Access::R or "
+                            "cv::RMat::Access::W can only be mapped to cv::MediaFrame::Access!"));
+                }
+            };
+
+            auto fv = m_frame.access(rmatToFrameAccess(a));
+
+            auto fvHolder = std::make_shared<cv::MediaFrame::View>(std::move(fv));
+            auto callback = [fvHolder]() mutable { fvHolder.reset(); };
+
+            return asView(m_frameViewToMat(m_frame.desc(), *fvHolder), callback);
+        }
+
+        virtual cv::GMatDesc desc() const override
+        {
+            return m_frameDescToMatDesc(m_frameDesc);
+        }
+
+        cv::MediaFrame m_frame;
+        cv::GFrameDesc m_frameDesc;
+        MapDescF m_frameDescToMatDesc;
+        MapDataF m_frameViewToMat;
+    };
+
+
 namespace magazine {
     template<typename... Ts> struct Class
     {
         template<typename T> using MapT = std::unordered_map<int, T>;
+        using MapM = std::unordered_map<int, GRunArg::Meta>;
+
         template<typename T>       MapT<T>& slot()
         {
             return std::get<ade::util::type_list_index<T, Ts...>::value>(slots);
@@ -55,8 +120,17 @@ namespace magazine {
         {
             return std::get<ade::util::type_list_index<T, Ts...>::value>(slots);
         }
+        template<typename T> MapM& meta()
+        {
+            return metas[ade::util::type_list_index<T, Ts...>::value];
+        }
+        template<typename T> const MapM& meta() const
+        {
+            return metas[ade::util::type_list_index<T, Ts...>::value];
+        }
     private:
         std::tuple<MapT<Ts>...> slots;
+        std::array<MapM, sizeof...(Ts)> metas;
     };
 
 } // namespace magazine
@@ -133,7 +207,7 @@ inline cv::util::optional<T> getCompileArg(const cv::GCompileArgs &args)
     return cv::gapi::getCompileArg<T>(args);
 }
 
-void createMat(const cv::GMatDesc& desc, cv::Mat& mat);
+void GAPI_EXPORTS createMat(const cv::GMatDesc& desc, cv::Mat& mat);
 
 }} // cv::gimpl
 

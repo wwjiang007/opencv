@@ -1583,6 +1583,11 @@ TEST_P(Test_Caffe_layers, Interp)
 TEST_P(Test_Caffe_layers, DISABLED_Interp)  // requires patched protobuf (available in OpenCV source tree only)
 #endif
 {
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2021030000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH);  // exception
+#endif
+
     if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_MYRIAD)
         applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD);
 
@@ -2152,6 +2157,12 @@ public:
             randu(scales, -1.0f, 1.0f);
             activationParams.blobs.push_back(scales);
         }
+        else if (activationParams.type == "Exp")
+        {
+            activationParams.set("base", -1.0f);
+            activationParams.set("scale", 0.3f);
+            activationParams.set("shift", 0.6f);
+        }
     }
 
     static void makeDefaultTestEltwiseLayer(LayerParams& eltwiseParams, const std::string& op, bool withCoefficients)
@@ -2223,12 +2234,12 @@ public:
     static testing::internal::ParamGenerator<std::string> activationLayersList()
     {
         // TODO: automate list generation
-        return Values("ReLU", "ReLU6", "ChannelsPReLU", "TanH", "Swish", "Mish", "Sigmoid", "ELU", "AbsVal", "BNLL", "Power");
+        return Values("ReLU", "ReLU6", "ChannelsPReLU", "TanH", "Swish", "Mish", "Sigmoid", "ELU", "AbsVal", "BNLL", "Power", "Exp");
     }
 
     static testing::internal::ParamGenerator<tuple<Backend, Target> > dnnBackendsAndTargetsForFusionTests()
     {
-        return dnnBackendsAndTargets(false, false, true, false, false, false); // OCV OpenCL + OCV CPU
+        return dnnBackendsAndTargets(false, false, true, false, true, false); // OCV OpenCL + OCV CPU + CUDA
     }
 };
 
@@ -2280,7 +2291,12 @@ TEST_P(ConvolutionActivationFusion, Accuracy)
                 expectedFusedLayers.push_back(activId);
         }
     }
-
+    else if (backendId == DNN_BACKEND_CUDA)
+    {
+        if (actType == "ReLU" || actType == "ReLU6" || actType == "TanH" || actType == "Swish" ||
+            actType == "Mish" || actType == "Sigmoid" || actType == "Power")
+                expectedFusedLayers.push_back(activId);
+    }
     TestLayerFusion::test(input, net, backendId, targetId, expectedFusedLayers);
 }
 INSTANTIATE_TEST_CASE_P(TestLayerFusion, ConvolutionActivationFusion, Combine(
@@ -2319,7 +2335,7 @@ TEST_P(ConvolutionEltwiseFusion, Accuracy)
     std::string eltwiseOp = get<1>(GetParam());
     bool weightedEltwise = get<2>(GetParam());
     if (eltwiseOp != "sum" && weightedEltwise)
-            throw SkipTestException("weighted eltwise not supported");
+        throw SkipTestException("weighted eltwise not supported");
     LayerParams eltwiseParams;
     TestLayerFusion::makeDefaultTestEltwiseLayer(eltwiseParams, eltwiseOp, weightedEltwise);
 
@@ -2332,7 +2348,11 @@ TEST_P(ConvolutionEltwiseFusion, Accuracy)
 
     Backend backendId = get<0>(get<3>(GetParam()));
     Target targetId = get<1>(get<3>(GetParam()));
-    TestLayerFusion::test(input, net, backendId, targetId);
+
+    std::vector<int> expectedFusedLayers;
+    if (backendId == DNN_BACKEND_CUDA && eltwiseOp == "sum" && !weightedEltwise)
+        expectedFusedLayers.push_back(eltwiseId);
+    TestLayerFusion::test(input, net, backendId, targetId, expectedFusedLayers);
 }
 INSTANTIATE_TEST_CASE_P(TestLayerFusion, ConvolutionEltwiseFusion, Combine(
 /* bias */              testing::Bool(),
@@ -2411,7 +2431,16 @@ TEST_P(ConvolutionEltwiseActivationFusion, Accuracy)
             }
         }
     }
-
+    else if(backendId == DNN_BACKEND_CUDA)
+    {
+        if (eltwiseOp == "sum" && !weightedEltwise)
+        {
+            expectedFusedLayers.push_back(eltwiseId);
+            if (actType == "ReLU" || actType == "ReLU6" || actType == "TanH" || actType == "Swish" ||
+                actType == "Mish" || actType == "Sigmoid" || actType == "Power")
+                expectedFusedLayers.push_back(activId);
+        }
+    }
     TestLayerFusion::test(input, net, backendId, targetId, expectedFusedLayers);
 }
 INSTANTIATE_TEST_CASE_P(TestLayerFusion, ConvolutionEltwiseActivationFusion, Combine(
@@ -2486,7 +2515,16 @@ TEST_P(ConvolutionActivationEltwiseFusion, Accuracy)
                 expectedFusedLayers.push_back(activId); // activation fused with convolution
         }
     }
-
+    else if(backendId == DNN_BACKEND_CUDA)
+    {
+        if (actType == "ReLU" || actType == "ReLU6" || actType == "TanH" || actType == "Swish" ||
+            actType == "Mish" || actType == "Sigmoid" || actType == "Power")
+        {
+                expectedFusedLayers.push_back(activId);
+                if (eltwiseOp == "sum" && !weightedEltwise)
+                    expectedFusedLayers.push_back(eltwiseId);
+        }
+    }
     TestLayerFusion::test(input, net, backendId, targetId, expectedFusedLayers);
 }
 INSTANTIATE_TEST_CASE_P(TestLayerFusion, ConvolutionActivationEltwiseFusion, Combine(

@@ -258,7 +258,8 @@ public:
     void apply(GRunArgs &&ins, GRunArgsP &&outs, GCompileArgs &&args = {});       // Arg-to-arg overload
 
     /// @private -- Exclude this function from OpenCV documentation
-    GAPI_WRAP GRunArgs apply(GRunArgs &&ins, GCompileArgs &&args = {});
+    GAPI_WRAP GRunArgs apply(const cv::detail::ExtractArgsCallback  &callback,
+                                   GCompileArgs                    &&args = {});
 
     /// @private -- Exclude this function from OpenCV documentation
     void apply(const std::vector<cv::Mat>& ins,                                   // Compatibility overload
@@ -438,6 +439,10 @@ public:
      */
     GStreamingCompiled compileStreaming(GMetaArgs &&in_metas, GCompileArgs &&args = {});
 
+    /// @private -- Exclude this function from OpenCV documentation
+    GAPI_WRAP GStreamingCompiled compileStreaming(const cv::detail::ExtractMetaCallback &callback,
+                                                        GCompileArgs                   &&args = {});
+
     /**
      * @brief Compile the computation for streaming mode.
      *
@@ -457,7 +462,7 @@ public:
      *
      * @sa @ref gapi_compile_args
      */
-    GStreamingCompiled compileStreaming(GCompileArgs &&args = {});
+    GAPI_WRAP GStreamingCompiled compileStreaming(GCompileArgs &&args = {});
 
     // 2. Direct metadata version
     /**

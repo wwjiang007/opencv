@@ -2,7 +2,7 @@
 // It is subject to the license terms in the LICENSE file found in the top-level directory
 // of this distribution and at http://opencv.org/license.html.
 //
-// Copyright (C) 2018-2020 Intel Corporation
+// Copyright (C) 2018-2021 Intel Corporation
 
 
 #ifndef OPENCV_GAPI_CORE_PERF_TESTS_INL_HPP
@@ -11,6 +11,8 @@
 #include <iostream>
 
 #include "gapi_core_perf_tests.hpp"
+
+#include "../../test/common/gapi_core_tests_common.hpp"
 
 namespace opencv_test
 {
@@ -1905,6 +1907,135 @@ PERF_TEST_P_(ConvertToPerfTest, TestPerformance)
 
 //------------------------------------------------------------------------------
 
+PERF_TEST_P_(KMeansNDPerfTest, TestPerformance)
+{
+    cv::Size sz;
+    CompareMats cmpF;
+    int K = -1;
+    cv::KmeansFlags flags = cv::KMEANS_RANDOM_CENTERS;
+    cv::GCompileArgs compile_args;
+    std::tie(sz, cmpF, K, flags, compile_args) = GetParam();
+
+    MatType2 type = CV_32FC1;
+    initMatrixRandU(type, sz, -1, false);
+
+    double compact_gapi = -1.;
+    cv::Mat labels_gapi, centers_gapi;
+    if (flags & cv::KMEANS_USE_INITIAL_LABELS)
+    {
+        const int amount = sz.height;
+        cv::Mat bestLabels(cv::Size{1, amount}, CV_32SC1);
+        cv::randu(bestLabels, 0, K);
+
+        cv::GComputation c(kmeansTestGAPI(in_mat1, bestLabels, K, flags, std::move(compile_args),
+                                          compact_gapi, labels_gapi, centers_gapi));
+        TEST_CYCLE()
+        {
+            c.apply(cv::gin(in_mat1, bestLabels),
+                    cv::gout(compact_gapi, labels_gapi, centers_gapi));
+        }
+        kmeansTestOpenCVCompare(in_mat1, bestLabels, K, flags, compact_gapi, labels_gapi,
+                                centers_gapi, cmpF);
+    }
+    else
+    {
+        cv::GComputation c(kmeansTestGAPI(in_mat1, K, flags, std::move(compile_args), compact_gapi,
+                                          labels_gapi, centers_gapi));
+        TEST_CYCLE()
+        {
+            c.apply(cv::gin(in_mat1), cv::gout(compact_gapi, labels_gapi, centers_gapi));
+        }
+        kmeansTestValidate(sz, type, K, compact_gapi, labels_gapi, centers_gapi);
+    }
+    SANITY_CHECK_NOTHING();
+}
+
+PERF_TEST_P_(KMeans2DPerfTest, TestPerformance)
+{
+    int amount = -1;
+    int K = -1;
+    cv::KmeansFlags flags = cv::KMEANS_RANDOM_CENTERS;
+    cv::GCompileArgs compile_args;
+    std::tie(amount, K, flags, compile_args) = GetParam();
+
+    std::vector<cv::Point2f> in_vector{};
+    initPointsVectorRandU(amount, in_vector);
+
+    double compact_gapi = -1.;
+    std::vector<int> labels_gapi{};
+    std::vector<cv::Point2f> centers_gapi{};
+    if (flags & cv::KMEANS_USE_INITIAL_LABELS)
+    {
+        std::vector<int> bestLabels(amount);
+        cv::randu(bestLabels, 0, K);
+
+        cv::GComputation c(kmeansTestGAPI(in_vector, bestLabels, K, flags, std::move(compile_args),
+                                          compact_gapi, labels_gapi, centers_gapi));
+        TEST_CYCLE()
+        {
+            c.apply(cv::gin(in_vector, bestLabels),
+                    cv::gout(compact_gapi, labels_gapi, centers_gapi));
+        }
+        kmeansTestOpenCVCompare(in_vector, bestLabels, K, flags, compact_gapi, labels_gapi,
+                                centers_gapi);
+    }
+    else
+    {
+        cv::GComputation c(kmeansTestGAPI(in_vector, K, flags, std::move(compile_args),
+                                          compact_gapi, labels_gapi, centers_gapi));
+        TEST_CYCLE()
+        {
+            c.apply(cv::gin(in_vector), cv::gout(compact_gapi, labels_gapi, centers_gapi));
+        }
+        kmeansTestValidate({-1, amount}, -1, K, compact_gapi, labels_gapi, centers_gapi);
+    }
+    SANITY_CHECK_NOTHING();
+}
+
+PERF_TEST_P_(KMeans3DPerfTest, TestPerformance)
+{
+    int amount = -1;
+    int K = -1;
+    cv::KmeansFlags flags = cv::KMEANS_RANDOM_CENTERS;
+    cv::GCompileArgs compile_args;
+    std::tie(amount, K, flags, compile_args) = GetParam();
+
+    std::vector<cv::Point3f> in_vector{};
+    initPointsVectorRandU(amount, in_vector);
+
+    double compact_gapi = -1.;
+    std::vector<int> labels_gapi;
+    std::vector<cv::Point3f> centers_gapi;
+    if (flags & cv::KMEANS_USE_INITIAL_LABELS)
+    {
+        std::vector<int> bestLabels(amount);
+        cv::randu(bestLabels, 0, K);
+
+        cv::GComputation c(kmeansTestGAPI(in_vector, bestLabels, K, flags, std::move(compile_args),
+                                          compact_gapi, labels_gapi, centers_gapi));
+        TEST_CYCLE()
+        {
+            c.apply(cv::gin(in_vector, bestLabels),
+                    cv::gout(compact_gapi, labels_gapi, centers_gapi));
+        }
+        kmeansTestOpenCVCompare(in_vector, bestLabels, K, flags, compact_gapi, labels_gapi,
+                                centers_gapi);
+    }
+    else
+    {
+        cv::GComputation c(kmeansTestGAPI(in_vector, K, flags, std::move(compile_args),
+                                          compact_gapi, labels_gapi, centers_gapi));
+        TEST_CYCLE()
+        {
+            c.apply(cv::gin(in_vector), cv::gout(compact_gapi, labels_gapi, centers_gapi));
+        }
+        kmeansTestValidate({-1, amount}, -1, K, compact_gapi, labels_gapi, centers_gapi);
+    }
+    SANITY_CHECK_NOTHING();
+}
+
+//------------------------------------------------------------------------------
+
 PERF_TEST_P_(ResizePerfTest, TestPerformance)
 {
     compare_f cmpF = get<0>(GetParam());
@@ -2124,7 +2255,7 @@ PERF_TEST_P_(SizePerfTest, TestPerformance)
 
     // G-API code //////////////////////////////////////////////////////////////
     cv::GMat in;
-    auto out = cv::gapi::size(in);
+    auto out = cv::gapi::streaming::size(in);
     cv::GComputation c(cv::GIn(in), cv::GOut(out));
     cv::Size out_sz;
 
@@ -2156,7 +2287,7 @@ PERF_TEST_P_(SizeRPerfTest, TestPerformance)
 
     // G-API code //////////////////////////////////////////////////////////////
     cv::GOpaque<cv::Rect> op_rect;
-    auto out = cv::gapi::size(op_rect);
+    auto out = cv::gapi::streaming::size(op_rect);
     cv::GComputation c(cv::GIn(op_rect), cv::GOut(out));
     cv::Size out_sz;
 
