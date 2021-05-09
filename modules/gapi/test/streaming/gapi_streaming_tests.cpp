@@ -1108,22 +1108,20 @@ TEST(GAPI_Streaming, TestTwoVideosDifferentLength)
 {
     initTestDataPath();
     auto desc = cv::GMatDesc{CV_8U,3,{768,576}};
-    std::string path1, path2;
-    try {
-        path1 = findDataFile("cv/video/768x576.avi");
-        path2 = findDataFile("highgui/video/big_buck_bunny.avi");
-    } catch(...) {
-        throw SkipTestException("Video file can not be found");
-    }
+    auto path1 = findDataFile("cv/video/768x576.avi");
+    auto path2 = findDataFile("highgui/video/big_buck_bunny.avi");
 
     cv::GMat in1, in2;
     auto out = in1 + cv::gapi::resize(in2, desc.size);
 
     cv::GComputation cc(cv::GIn(in1, in2), cv::GOut(out));
     auto sc = cc.compileStreaming();
-
-    sc.setSource(cv::gin(gapi::wip::make_src<cv::gapi::wip::GCaptureSource>(path1),
-                         gapi::wip::make_src<cv::gapi::wip::GCaptureSource>(path2)));
+    try {
+        sc.setSource(cv::gin(gapi::wip::make_src<cv::gapi::wip::GCaptureSource>(path1),
+                             gapi::wip::make_src<cv::gapi::wip::GCaptureSource>(path2)));
+    } catch(...) {
+        throw SkipTestException("Video file can not be found");
+    }
     sc.start();
 
     cv::Mat out_mat;
@@ -1838,6 +1836,14 @@ namespace {
         BGR,
         NV12
     };
+    std::ostream& operator<<(std::ostream& os, TestSourceType a) {
+        os << "Source:";
+        switch (a) {
+            case TestSourceType::BGR:  return os << "BGR";
+            case TestSourceType::NV12: return os << "NV12";
+            default: CV_Assert(false && "unknown TestSourceType");
+        }
+    }
 
     cv::gapi::wip::IStreamSource::Ptr createTestSource(TestSourceType sourceType,
                                                        const std::string& pipeline) {
@@ -1874,24 +1880,80 @@ namespace {
 
         return ptr;
     }
+
+    enum class TestAccessType {
+        BGR,
+        Y,
+        UV
+    };
+    std::ostream& operator<<(std::ostream& os, TestAccessType a) {
+        os << "Accessor:";
+        switch (a) {
+            case TestAccessType::BGR: return os << "BGR";
+            case TestAccessType::Y:   return os << "Y";
+            case TestAccessType::UV:  return os << "UV";
+            default: CV_Assert(false && "unknown TestAccessType");
+        }
+    }
+
+    using GapiFunction = std::function<cv::GMat(const cv::GFrame&)>;
+    static std::map<TestAccessType, GapiFunction> gapi_functions = {
+        { TestAccessType::BGR, cv::gapi::streaming::BGR },
+        { TestAccessType::Y,   cv::gapi::streaming::Y   },
+        { TestAccessType::UV,  cv::gapi::streaming::UV  }
+    };
+
+    using RefFunction = std::function<cv::Mat(const cv::Mat&)>;
+    static std::map<std::pair<TestSourceType,TestAccessType>, RefFunction> ref_functions = {
+        { std::make_pair(TestSourceType::BGR, TestAccessType::BGR),
+          [](const cv::Mat& bgr) { return bgr; } },
+        { std::make_pair(TestSourceType::BGR, TestAccessType::Y),
+          [](const cv::Mat& bgr) {
+              cv::Mat y, uv;
+              cvtBGR2NV12(bgr, y, uv);
+              return y;
+          } },
+        { std::make_pair(TestSourceType::BGR, TestAccessType::UV),
+          [](const cv::Mat& bgr) {
+              cv::Mat y, uv;
+              cvtBGR2NV12(bgr, y, uv);
+              return uv;
+          } },
+        { std::make_pair(TestSourceType::NV12, TestAccessType::BGR),
+          [](const cv::Mat& bgr) {
+              cv::Mat y, uv, out_bgr;
+              cvtBGR2NV12(bgr, y, uv);
+              cv::cvtColorTwoPlane(y, uv, out_bgr,
+                                   cv::COLOR_YUV2BGR_NV12);
+              return out_bgr;
+          } },
+        { std::make_pair(TestSourceType::NV12, TestAccessType::Y),
+          [](const cv::Mat& bgr) {
+              cv::Mat y, uv;
+              cvtBGR2NV12(bgr, y, uv);
+              return y;
+          } },
+        { std::make_pair(TestSourceType::NV12, TestAccessType::UV),
+          [](const cv::Mat& bgr) {
+              cv::Mat y, uv;
+              cvtBGR2NV12(bgr, y, uv);
+              return uv;
+          } },
+    };
 } // anonymous namespace
 
 struct GAPI_Accessors_In_Streaming : public TestWithParam<
-                                        std::tuple<std::string,
-                                                   std::function<cv::GMat(const cv::GFrame&)>,
-                                                   TestSourceType,
-                                                   std::function<cv::Mat(const cv::Mat&)>>
-                                                          >
+    std::tuple<std::string,TestSourceType,TestAccessType>>
 { };
 
 TEST_P(GAPI_Accessors_In_Streaming, AccuracyTest)
 {
-    std::string filepath;
-    std::function<cv::GMat(const cv::GFrame&)> accessor;
+    std::string filepath{};
     TestSourceType sourceType = TestSourceType::BGR;
-    std::function<cv::Mat(const cv::Mat&)> fromBGR;
-
-    std::tie(filepath, accessor, sourceType, fromBGR) = GetParam();
+    TestAccessType accessType = TestAccessType::BGR;
+    std::tie(filepath, sourceType, accessType) = GetParam();
+    auto accessor = gapi_functions[accessType];
+    auto fromBGR = ref_functions[std::make_pair(sourceType, accessType)];
 
     initTestDataPathOrSkip();
     const std::string& absFilePath = findDataFile(filepath, false);
@@ -1926,97 +1988,24 @@ TEST_P(GAPI_Accessors_In_Streaming, AccuracyTest)
     cc.stop();
 }
 
-INSTANTIATE_TEST_CASE_P(AccessBGRFromBGRFrame, GAPI_Accessors_In_Streaming,
+INSTANTIATE_TEST_CASE_P(TestAccessor, GAPI_Accessors_In_Streaming,
                         Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::BGR),
-                                Values(TestSourceType::BGR),
-                                Values([](const cv::Mat& bgr){ return bgr; })
-                                )
-                        );
-
-INSTANTIATE_TEST_CASE_P(AccessBGRFromNV12Frame, GAPI_Accessors_In_Streaming,
-                        Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::BGR),
-                                Values(TestSourceType::NV12),
-                                Values([](const cv::Mat& bgr)
-                                       {
-                                           cv::Mat y, uv, out_bgr;
-                                           cvtBGR2NV12(bgr, y, uv);
-                                           cv::cvtColorTwoPlane(y, uv, out_bgr,
-                                                               cv::COLOR_YUV2BGR_NV12);
-                                           return out_bgr;
-                                       })
-                                )
-                        );
-
-INSTANTIATE_TEST_CASE_P(AccessYFromNV12Frame, GAPI_Accessors_In_Streaming,
-                        Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::Y),
-                                Values(TestSourceType::NV12),
-                                Values([](const cv::Mat& bgr)
-                                       {
-                                           cv::Mat y, uv;
-                                           cvtBGR2NV12(bgr, y, uv);
-                                           return y;
-                                       })
-                                )
-                        );
-
-INSTANTIATE_TEST_CASE_P(AccessYFromBGRFrame, GAPI_Accessors_In_Streaming,
-                        Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::Y),
-                                Values(TestSourceType::BGR),
-                                Values([](const cv::Mat& bgr)
-                                       {
-                                           cv::Mat y, uv;
-                                           cvtBGR2NV12(bgr, y, uv);
-                                           return y;
-                                       })
-                                )
-                        );
-
-INSTANTIATE_TEST_CASE_P(AccessUVFromNV12Frame, GAPI_Accessors_In_Streaming,
-                        Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::UV),
-                                Values(TestSourceType::NV12),
-                                Values([](const cv::Mat& bgr)
-                                       {
-                                           cv::Mat y, uv;
-                                           cvtBGR2NV12(bgr, y, uv);
-                                           return uv;
-                                       })
-                                )
-                        );
-
-INSTANTIATE_TEST_CASE_P(AccessUVFromBGRFrame, GAPI_Accessors_In_Streaming,
-                        Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::UV),
-                                Values(TestSourceType::BGR),
-                                Values([](const cv::Mat& bgr)
-                                       {
-                                           cv::Mat y, uv;
-                                           cvtBGR2NV12(bgr, y, uv);
-                                           return uv;
-                                       })
-                                )
-                        );
+                                Values(TestSourceType::BGR, TestSourceType::NV12),
+                                Values(TestAccessType::BGR, TestAccessType::Y, TestAccessType::UV)
+                        ));
 
 struct GAPI_Accessors_Meta_In_Streaming : public TestWithParam<
-                                              std::tuple<std::string,
-                                                         std::function<cv::GMat(const cv::GFrame&)>,
-                                                         TestSourceType,
-                                                         std::function<cv::Mat(const cv::Mat&)>>
-                                                                >
+    std::tuple<std::string,TestSourceType,TestAccessType>>
 { };
 
 TEST_P(GAPI_Accessors_Meta_In_Streaming, AccuracyTest)
 {
-    std::string filepath;
-    std::function<cv::GMat(const cv::GFrame&)> accessor;
+    std::string filepath{};
     TestSourceType sourceType = TestSourceType::BGR;
-    std::function<cv::Mat(const cv::Mat&)> fromBGR;
-
-    std::tie(filepath, accessor, sourceType, fromBGR) = GetParam();
+    TestAccessType accessType = TestAccessType::BGR;
+    std::tie(filepath, sourceType, accessType) = GetParam();
+    auto accessor = gapi_functions[accessType];
+    auto fromBGR = ref_functions[std::make_pair(sourceType, accessType)];
 
     initTestDataPathOrSkip();
     const std::string& absFilePath = findDataFile(filepath, false);
@@ -2070,39 +2059,11 @@ TEST_P(GAPI_Accessors_Meta_In_Streaming, AccuracyTest)
     EXPECT_TRUE(std::is_sorted(all_timestamps.begin(), all_timestamps.end()));
 }
 
-INSTANTIATE_TEST_CASE_P(BGRAccessorMeta, GAPI_Accessors_Meta_In_Streaming,
+INSTANTIATE_TEST_CASE_P(AccessorMeta, GAPI_Accessors_Meta_In_Streaming,
                         Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::BGR),
-                                Values(TestSourceType::BGR),
-                                Values([](const cv::Mat& bgr) { return bgr; })
-                                )
-                        );
-
-INSTANTIATE_TEST_CASE_P(YAccessorMeta, GAPI_Accessors_Meta_In_Streaming,
-                        Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::Y),
-                                Values(TestSourceType::NV12),
-                                Values([](const cv::Mat& bgr)
-                                       {
-                                           cv::Mat y, uv;
-                                           cvtBGR2NV12(bgr, y, uv);
-                                           return y;
-                                       })
-                                )
-                        );
-
-INSTANTIATE_TEST_CASE_P(UVAccessorMeta, GAPI_Accessors_Meta_In_Streaming,
-                        Combine(Values("cv/video/768x576.avi"),
-                                Values(cv::gapi::streaming::UV),
-                                Values(TestSourceType::NV12),
-                                Values([](const cv::Mat& bgr)
-                                       {
-                                           cv::Mat y, uv;
-                                           cvtBGR2NV12(bgr, y, uv);
-                                           return uv;
-                                       })
-                                )
-                        );
+                                Values(TestSourceType::BGR, TestSourceType::NV12),
+                                Values(TestAccessType::BGR, TestAccessType::Y, TestAccessType::UV)
+                        ));
 
 TEST(GAPI_Streaming, TestPythonAPI)
 {

@@ -104,8 +104,9 @@ inline IE::Layout toIELayout(const std::size_t ndims) {
 inline IE::Precision toIE(int depth) {
     switch (depth) {
     case CV_8U:  return IE::Precision::U8;
+    case CV_32S: return IE::Precision::I32;
     case CV_32F: return IE::Precision::FP32;
-    default:     GAPI_Assert(false && "Unsupported data type");
+    default:     GAPI_Assert(false && "IE. Unsupported data type");
     }
     return IE::Precision::UNSPECIFIED;
 }
@@ -113,7 +114,9 @@ inline int toCV(IE::Precision prec) {
     switch (prec) {
     case IE::Precision::U8:   return CV_8U;
     case IE::Precision::FP32: return CV_32F;
-    default:     GAPI_Assert(false && "Unsupported data type");
+    case IE::Precision::I32:  return CV_32S;
+    case IE::Precision::I64:  return CV_32S;
+    default:     GAPI_Assert(false && "IE. Unsupported data type");
     }
     return -1;
 }
@@ -154,8 +157,9 @@ inline IE::Blob::Ptr wrapIE(const cv::Mat &mat, cv::gapi::ie::TraitAs hint) {
         case CV_##E: return IE::make_shared_blob<T>(tDesc, const_cast<T*>(mat.ptr<T>()))
         HANDLE(8U, uint8_t);
         HANDLE(32F, float);
+        HANDLE(32S, int);
 #undef HANDLE
-    default: GAPI_Assert(false && "Unsupported data type");
+    default: GAPI_Assert(false && "IE. Unsupported data type");
     }
     return IE::Blob::Ptr{};
 }
@@ -189,8 +193,16 @@ inline void copyFromIE(const IE::Blob::Ptr &blob, MatType &mat) {
             break;
         HANDLE(U8, uint8_t);
         HANDLE(FP32, float);
+        HANDLE(I32, int);
 #undef HANDLE
-    default: GAPI_Assert(false && "Unsupported data type");
+        case IE::Precision::I64: {
+            GAPI_LOG_WARNING(NULL, "INT64 isn't supported for cv::Mat. Conversion to INT32 is used.");
+            cv::gimpl::convertInt64ToInt32(blob->buffer().as<int64_t*>(),
+                                           reinterpret_cast<int*>(mat.data),
+                                           mat.total());
+            break;
+        }
+    default: GAPI_Assert(false && "IE. Unsupported data type");
     }
 }
 
@@ -518,10 +530,11 @@ public:
     explicit RequestPool(std::vector<InferenceEngine::InferRequest>&& requests);
 
     void execute(Task&& t);
-    void waitAndShutdown();
+    void waitAll();
 
 private:
     void callback(Task task, InferenceEngine::InferRequest& request, size_t id);
+    void setup();
 
     QueueClass<size_t>                         m_idle_ids;
     std::vector<InferenceEngine::InferRequest> m_requests;
@@ -530,10 +543,14 @@ private:
 // RequestPool implementation //////////////////////////////////////////////
 cv::gimpl::ie::RequestPool::RequestPool(std::vector<InferenceEngine::InferRequest>&& requests)
     : m_requests(std::move(requests)) {
-        for (size_t i = 0; i < m_requests.size(); ++i) {
-            m_idle_ids.push(i);
-        }
+        setup();
     }
+
+void cv::gimpl::ie::RequestPool::setup() {
+    for (size_t i = 0; i < m_requests.size(); ++i) {
+        m_idle_ids.push(i);
+    }
+}
 
 void cv::gimpl::ie::RequestPool::execute(cv::gimpl::ie::RequestPool::Task&& t) {
     size_t id = 0u;
@@ -554,12 +571,13 @@ void cv::gimpl::ie::RequestPool::callback(cv::gimpl::ie::RequestPool::Task task,
 }
 
 // NB: Not thread-safe.
-void cv::gimpl::ie::RequestPool::waitAndShutdown() {
+void cv::gimpl::ie::RequestPool::waitAll() {
     // NB: It will be blocked if at least one request is busy.
     for (size_t i = 0; i < m_requests.size(); ++i) {
         size_t id = 0u;
         m_idle_ids.pop(id);
     }
+    setup();
 }
 
 // GCPUExcecutable implementation //////////////////////////////////////////////
@@ -620,7 +638,7 @@ void cv::gimpl::ie::GIEExecutable::run(cv::gimpl::GIslandExecutable::IInput  &in
     if (cv::util::holds_alternative<cv::gimpl::EndOfStream>(in_msg))
     {
         // (3) Wait until all passed task are done.
-        m_reqPool->waitAndShutdown();
+        m_reqPool->waitAll();
         out.post(cv::gimpl::EndOfStream{});
         return;
     }
@@ -659,7 +677,7 @@ void cv::gimpl::ie::GIEExecutable::run(cv::gimpl::GIslandExecutable::IInput  &in
     // (5) In non-streaming mode need to wait until the all tasks are done
     // FIXME: Is there more graceful way to handle this case ?
     if (!m_gm.metadata().contains<Streaming>()) {
-        m_reqPool->waitAndShutdown();
+        m_reqPool->waitAll();
     }
 }
 
